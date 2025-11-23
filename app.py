@@ -5,15 +5,54 @@ import os
 from audio_recorder_streamlit import audio_recorder
 import speech_recognition as sr
 import io
-import pyttsx3
+from gtts import gTTS
 import base64
-import threading
+import hashlib
 
 # Load environment variables
 load_dotenv()
 
 # Configure Gemini API
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+
+# Language configuration
+LANGUAGES = {
+    "English": {
+        "name": "English",
+        "flag": "🇺🇸",
+        "code": "en",
+        "speech_recognition_code": "en-US",
+        "tts_code": "en"
+    },
+    "Spanish": {
+        "name": "Spanish",
+        "flag": "🇪🇸",
+        "code": "es",
+        "speech_recognition_code": "es-ES",
+        "tts_code": "es"
+    },
+    "French": {
+        "name": "French",
+        "flag": "🇫🇷",
+        "code": "fr",
+        "speech_recognition_code": "fr-FR",
+        "tts_code": "fr"
+    },
+    "Chinese": {
+        "name": "Chinese (Mandarin)",
+        "flag": "🇨🇳",
+        "code": "zh-CN",
+        "speech_recognition_code": "zh-CN",
+        "tts_code": "zh-CN"
+    },
+    "Japanese": {
+        "name": "Japanese",
+        "flag": "🇯🇵",
+        "code": "ja",
+        "speech_recognition_code": "ja-JP",
+        "tts_code": "ja"
+    }
+}
 
 # Personality system prompts
 PERSONALITIES = {
@@ -46,31 +85,53 @@ st.set_page_config(
     layout="wide"
 )
 
-# Scroll to last AI response
+# Scroll to last AI response or voice input section
 import streamlit.components.v1 as components
+
+# Determine scroll target based on conversation flow mode
+scroll_target = "voice_input" if st.session_state.get("show_continue_prompt", False) else "assistant"
+
 components.html(
-    """
+    f"""
     <script>
-        function scrollToLastAssistantMessage() {
-            setTimeout(() => {
-                const messages = window.parent.document.querySelectorAll('[data-testid="stChatMessage"]');
-                let lastAssistant = null;
+        function scrollToTarget() {{
+            setTimeout(() => {{
+                const target = '{scroll_target}';
 
-                for (let i = messages.length - 1; i >= 0; i--) {
-                    if (messages[i].querySelector('[data-testid="chatAvatarIcon-assistant"]')) {
-                        lastAssistant = messages[i];
-                        break;
-                    }
-                }
+                if (target === 'voice_input') {{
+                    // Scroll to voice input section
+                    const voiceSection = window.parent.document.evaluate(
+                        "//h3[contains(text(), 'Voice Input')]",
+                        window.parent.document,
+                        null,
+                        XPathResult.FIRST_ORDERED_NODE_TYPE,
+                        null
+                    ).singleNodeValue;
 
-                if (lastAssistant) {
-                    lastAssistant.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                }
-            }, 300);
-        }
+                    if (voiceSection) {{
+                        voiceSection.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+                    }}
+                }} else {{
+                    // Scroll to last assistant message
+                    const messages = window.parent.document.querySelectorAll('[data-testid="stChatMessage"]');
+                    let lastAssistant = null;
 
-        scrollToLastAssistantMessage();
-        window.addEventListener('load', scrollToLastAssistantMessage);
+                    for (let i = messages.length - 1; i >= 0; i--) {{
+                        if (messages[i].querySelector('[data-testid="chatAvatarIcon-assistant"]')) {{
+                            lastAssistant = messages[i];
+                            break;
+                        }}
+                    }}
+
+                    if (lastAssistant) {{
+                        lastAssistant.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+                    }}
+                }}
+            }}, 300);
+        }}
+
+        scrollToTarget();
+        window.addEventListener('load', scrollToTarget);
     </script>
     """,
     height=0,
@@ -98,72 +159,109 @@ if "show_edit" not in st.session_state:
 if "enable_voice_response" not in st.session_state:
     st.session_state.enable_voice_response = False
 
-if "speech_engine" not in st.session_state:
-    st.session_state.speech_engine = None
+if "tts_audio" not in st.session_state:
+    st.session_state.tts_audio = {}
 
-# Function to stop any ongoing speech
-def stop_speech():
-    """Stop any currently running speech"""
+if "processing" not in st.session_state:
+    st.session_state.processing = False
+
+if "language" not in st.session_state:
+    st.session_state.language = "English"
+
+if "last_language" not in st.session_state:
+    st.session_state.last_language = "English"
+
+if "conversation_flow_mode" not in st.session_state:
+    st.session_state.conversation_flow_mode = False
+
+if "conversation_turns" not in st.session_state:
+    st.session_state.conversation_turns = 0
+
+if "show_continue_prompt" not in st.session_state:
+    st.session_state.show_continue_prompt = False
+
+# Function to clean text for TTS
+def clean_text_for_speech(text):
+    """Remove unnecessary symbols and clean text for natural speech"""
+    import re
+
+    # Remove markdown formatting
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)  # Bold **text**
+    text = re.sub(r'\*(.+?)\*', r'\1', text)  # Italic *text*
+    text = re.sub(r'__(.+?)__', r'\1', text)  # Bold __text__
+    text = re.sub(r'_(.+?)_', r'\1', text)  # Italic _text_
+    text = re.sub(r'`(.+?)`', r'\1', text)  # Code `text`
+    text = re.sub(r'```.*?```', '', text, flags=re.DOTALL)  # Code blocks
+
+    # Remove markdown links but keep text: [text](url) -> text
+    text = re.sub(r'\[(.+?)\]\(.+?\)', r'\1', text)
+
+    # Remove headers
+    text = re.sub(r'^#+\s+', '', text, flags=re.MULTILINE)
+
+    # Remove bullet points and list markers
+    text = re.sub(r'^\s*[-*+]\s+', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^\s*\d+\.\s+', '', text, flags=re.MULTILINE)
+
+    # Remove extra symbols that don't add to speech
+    text = re.sub(r'[#|>]', '', text)
+
+    # Clean up multiple spaces and newlines
+    text = re.sub(r'\n+', '. ', text)
+    text = re.sub(r'\s+', ' ', text)
+
+    # Remove leading/trailing whitespace
+    text = text.strip()
+
+    return text
+
+# Function to generate TTS audio
+def generate_tts_audio(text, message_index, tts_lang_code):
+    """Generate audio from text using gTTS and store in session state"""
     try:
-        if st.session_state.speech_engine is not None:
-            st.session_state.speech_engine.stop()
-    except:
-        pass
+        # Create a unique key for this message including language
+        audio_key = f"audio_{message_index}_{tts_lang_code}"
 
-# Function to speak text directly (no file needed)
-def speak_text(text):
-    """Speak text using pyttsx3 (offline, much faster)"""
-    try:
-        # Initialize pyttsx3 engine
-        engine = pyttsx3.init()
+        # Only generate if not already generated
+        if audio_key not in st.session_state.tts_audio:
+            # Clean text for better speech
+            clean_text = clean_text_for_speech(text)
 
-        # Store engine in session state so we can stop it later
-        st.session_state.speech_engine = engine
+            # Warn for very long messages
+            if len(clean_text) > 500:
+                with st.spinner("🎵 Generating audio for long message..."):
+                    # Truncate extremely long messages for TTS
+                    tts_text = clean_text[:1000] + "..." if len(clean_text) > 1000 else clean_text
 
-        # Set properties for more natural-sounding voice
-        voices = engine.getProperty('voices')
+                    # Generate speech with selected language
+                    tts = gTTS(text=tts_text, lang=tts_lang_code, slow=False)
 
-        # Use ONLY female voice (Samantha on macOS)
-        # Find Samantha specifically by name, or any female voice
-        female_voice = None
-        for voice in voices:
-            voice_name = voice.name.lower()
-            # Look for Samantha or any female voice identifier
-            if 'samantha' in voice_name or 'female' in voice_name or 'woman' in voice_name:
-                female_voice = voice.id
-                break
+                    # Save to bytes
+                    audio_bytes = io.BytesIO()
+                    tts.write_to_fp(audio_bytes)
+                    audio_bytes.seek(0)
 
-        # If no explicitly female voice found, use index 1 (typically female on macOS)
-        if female_voice:
-            engine.setProperty('voice', female_voice)
-        elif len(voices) > 1:
-            # Force use of second voice which is typically female (Samantha)
-            engine.setProperty('voice', voices[1].id)
-        else:
-            # Last resort fallback
-            engine.setProperty('voice', voices[0].id)
+                    # Store in session state
+                    st.session_state.tts_audio[audio_key] = audio_bytes.read()
+            else:
+                # Generate speech for normal messages with selected language
+                tts = gTTS(text=clean_text, lang=tts_lang_code, slow=False)
 
-        # Set speech rate (faster for quicker responses)
-        engine.setProperty('rate', 190)
+                # Save to bytes
+                audio_bytes = io.BytesIO()
+                tts.write_to_fp(audio_bytes)
+                audio_bytes.seek(0)
 
-        # Set volume (0.0 to 1.0)
-        engine.setProperty('volume', 0.9)
+                # Store in session state
+                st.session_state.tts_audio[audio_key] = audio_bytes.read()
 
-        # Speak the text
-        engine.say(text)
-        engine.runAndWait()
-
-        # Clear engine from session state after speaking
-        st.session_state.speech_engine = None
-
-        return True
+        return st.session_state.tts_audio[audio_key]
     except Exception as e:
-        st.session_state.speech_engine = None
-        st.error(f"Error generating speech: {str(e)}")
-        return False
+        st.error(f"❌ Audio generation failed: {str(e)}")
+        return None
 
 # Function to transcribe audio to text
-def transcribe_audio(audio_bytes):
+def transcribe_audio(audio_bytes, language_code):
     """Convert audio bytes to text using speech recognition"""
     try:
         # Initialize recognizer with optimized settings
@@ -194,8 +292,8 @@ def transcribe_audio(audio_bytes):
 
         # Try to recognize speech with show_all=True to get alternatives
         try:
-            # Get detailed results with confidence scores
-            result = recognizer.recognize_google(audio_data, language="en-US", show_all=True)
+            # Get detailed results with confidence scores using the selected language
+            result = recognizer.recognize_google(audio_data, language=language_code, show_all=True)
 
             if result and len(result['alternative']) > 0:
                 # Return the best transcription (first alternative has highest confidence)
@@ -205,8 +303,8 @@ def transcribe_audio(audio_bytes):
                 return "[unclear audio - could not transcribe]"
 
         except:
-            # Fallback to simple recognition
-            text = recognizer.recognize_google(audio_data, language="en-US")
+            # Fallback to simple recognition with selected language
+            text = recognizer.recognize_google(audio_data, language=language_code)
             return text
 
     except sr.UnknownValueError:
@@ -220,6 +318,41 @@ def transcribe_audio(audio_bytes):
 # Sidebar
 with st.sidebar:
     st.title("🤖 AI Chatbot Settings")
+    st.markdown("---")
+
+    # Language selector
+    st.subheader("🌍 Language")
+
+    # Create language options with flags
+    language_options = [f"{LANGUAGES[lang]['flag']} {LANGUAGES[lang]['name']}" for lang in LANGUAGES.keys()]
+    language_keys = list(LANGUAGES.keys())
+
+    selected_language_display = st.selectbox(
+        "Select Language:",
+        options=language_options,
+        index=language_keys.index(st.session_state.language)
+    )
+
+    # Extract the actual language key from the display string
+    selected_language = language_keys[language_options.index(selected_language_display)]
+
+    # Update language if changed
+    if selected_language != st.session_state.language:
+        st.session_state.last_language = st.session_state.language
+        st.session_state.language = selected_language
+        # Clear TTS audio cache when language changes
+        st.session_state.tts_audio = {}
+        st.rerun()
+
+    # Also update last_language if they match (for tracking)
+    if st.session_state.language != st.session_state.last_language:
+        st.session_state.tts_audio = {}
+        st.session_state.last_language = st.session_state.language
+
+    # Display current language info
+    current_lang = LANGUAGES[st.session_state.language]
+    st.info(f"🗣️ **Current:** {current_lang['flag']} {current_lang['name']}")
+
     st.markdown("---")
 
     # Personality selector
@@ -253,24 +386,115 @@ with st.sidebar:
         st.rerun()
 
     st.markdown("---")
-    st.subheader("Voice Response")
-    st.session_state.enable_voice_response = st.checkbox(
-        "Enable AI voice responses",
-        value=st.session_state.enable_voice_response,
-        help="AI will speak responses aloud in addition to showing text"
-    )
+    with st.expander("🔊 Voice Settings", expanded=True):
+        st.session_state.enable_voice_response = st.checkbox(
+            "Enable AI voice responses",
+            value=st.session_state.enable_voice_response,
+            help="AI will speak responses aloud with audio players below each message"
+        )
+        if st.session_state.enable_voice_response:
+            st.info("💡 Tip: Audio players will appear below AI responses. Click play to listen!")
+
+        st.markdown("---")
+
+        st.session_state.conversation_flow_mode = st.checkbox(
+            "🔄 Enhanced Conversation Flow",
+            value=st.session_state.conversation_flow_mode,
+            help="After AI responds, automatically highlight the microphone and show a prominent prompt to continue talking"
+        )
+
+        if st.session_state.conversation_flow_mode:
+            st.success("✅ Flow mode active - conversation prompts enabled!")
+            if st.session_state.conversation_turns > 0:
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.metric("Conversation Turns", st.session_state.conversation_turns)
+                with col2:
+                    if st.button("Reset", key="reset_turns"):
+                        st.session_state.conversation_turns = 0
+                        st.session_state.show_continue_prompt = False
+                        st.rerun()
 
 # Main chat interface
 st.title(f"💬 Chat with {PERSONALITIES[st.session_state.personality]['name']}")
 
 # Display chat messages
-for message in st.session_state.messages:
+for idx, message in enumerate(st.session_state.messages):
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
+    # Display audio player OUTSIDE chat message for assistant responses
+    if message["role"] == "assistant" and st.session_state.enable_voice_response:
+        # Add subtle divider for visual separation
+        st.markdown("---")
+
+        # Use columns for better layout (responsive on mobile)
+        col1, col2 = st.columns([4, 1])
+
+        with col1:
+            # Get TTS language code for the selected language
+            tts_lang_code = LANGUAGES[st.session_state.language]['tts_code']
+
+            audio_data = generate_tts_audio(message["content"], idx, tts_lang_code)
+            if audio_data:
+                lang_info = LANGUAGES[st.session_state.language]
+                st.markdown(f"🔊 **Listen to response** ({lang_info['flag']} {lang_info['name']}):")
+                st.audio(audio_data, format="audio/mp3")
+
+                # Show truncation warning if message was too long
+                if len(message["content"]) > 1000:
+                    st.caption("⚠️ Audio truncated to first 1000 characters")
+            else:
+                st.error("❌ Could not generate audio. Please try refreshing the page.")
+
+        with col2:
+            # Empty column for spacing (adjusts automatically on mobile)
+            pass
+
+        st.markdown("")  # Add spacing after audio section
+
 # Voice Input Section
 st.markdown("### 🎤 Voice Input")
-st.info("Click the microphone button, speak your message, then click stop. The message will auto-send after 1 second.")
+
+# Show prominent continue prompt if in conversation flow mode
+if st.session_state.show_continue_prompt and st.session_state.conversation_flow_mode:
+    st.success("### 🎙️ **Ready to continue? Click the microphone below!**")
+    st.info(f"💬 Conversation turn #{st.session_state.conversation_turns + 1} - Keep the conversation going!")
+
+    # Add a dismiss button
+    col1, col2 = st.columns([4, 1])
+    with col2:
+        if st.button("✓ Got it", type="secondary"):
+            st.session_state.show_continue_prompt = False
+            st.rerun()
+
+    st.markdown("---")
+
+with st.expander("ℹ️ How to use voice input", expanded=False):
+    st.markdown("""
+    **Steps:**
+    1. Select your preferred language in the sidebar (🌍 Language)
+    2. Click the microphone button below
+    3. Speak your message clearly in the selected language
+    4. Click stop when finished
+    5. Message will auto-send after 1 second
+
+    **Tips:**
+    - Speak clearly and at a normal pace
+    - Minimize background noise for best results
+    - You can edit transcriptions if needed
+    - AI will respond in your selected language
+
+    **🔄 Enhanced Conversation Flow:**
+    - Enable in Voice Settings sidebar
+    - After AI responds, you'll see a prominent "Continue" prompt
+    - Page automatically scrolls to microphone
+    - Track conversation turns in the sidebar
+    - Makes multi-turn conversations much faster!
+
+    **Supported Languages:**
+    🇺🇸 English | 🇪🇸 Spanish | 🇫🇷 French | 🇨🇳 Chinese | 🇯🇵 Japanese
+    """)
 
 # Show edit option BEFORE the audio recorder
 if st.session_state.show_edit and st.session_state.voice_text and len(st.session_state.messages) > 0:
@@ -314,20 +538,23 @@ if audio_bytes:
 
     # Only process if this is a new recording
     if audio_hash != st.session_state.last_audio_hash:
-        # Stop any ongoing speech when microphone is clicked
-        stop_speech()
-
         # Hide edit section when microphone is touched
         st.session_state.show_edit = False
         # Clear previous edit text when starting new recording
         st.session_state.voice_text = ""
+        # Hide continue prompt when user starts speaking
+        st.session_state.show_continue_prompt = False
 
         st.session_state.last_audio_hash = audio_hash
 
         st.audio(audio_bytes, format="audio/wav")
 
-        with st.spinner("Transcribing your voice..."):
-            transcribed_text = transcribe_audio(audio_bytes)
+        # Get the speech recognition code for the selected language
+        lang_config = LANGUAGES[st.session_state.language]
+        speech_lang_code = lang_config['speech_recognition_code']
+
+        with st.spinner(f"Transcribing your voice ({lang_config['flag']} {lang_config['name']})..."):
+            transcribed_text = transcribe_audio(audio_bytes, speech_lang_code)
 
         st.success(f"Transcribed: {transcribed_text}")
 
@@ -353,7 +580,14 @@ if audio_bytes:
             with st.spinner("Thinking..."):
                 try:
                     # Get current personality system prompt
-                    system_prompt = PERSONALITIES[st.session_state.personality]["system_prompt"]
+                    base_system_prompt = PERSONALITIES[st.session_state.personality]["system_prompt"]
+
+                    # Add language instruction to system prompt
+                    lang_name = LANGUAGES[st.session_state.language]["name"]
+                    if st.session_state.language != "English":
+                        system_prompt = f"{base_system_prompt}\n\nIMPORTANT: Please respond in {lang_name}. The user is communicating in {lang_name}, so respond naturally in {lang_name}."
+                    else:
+                        system_prompt = base_system_prompt
 
                     # Initialize model with system instruction
                     model = genai.GenerativeModel(
@@ -381,13 +615,6 @@ if audio_bytes:
                     # Display response
                     st.markdown(assistant_response)
 
-                    # Text-to-speech for AI response
-                    if st.session_state.enable_voice_response:
-                        # Speak in a separate thread so it doesn't block the UI
-                        import threading
-                        speech_thread = threading.Thread(target=speak_text, args=(assistant_response,))
-                        speech_thread.start()
-
                     # Add assistant response to chat history
                     st.session_state.messages.append({
                         "role": "assistant",
@@ -398,6 +625,11 @@ if audio_bytes:
                     st.session_state.voice_text = transcribed_text
                     # Show edit section after response is received
                     st.session_state.show_edit = True
+
+                    # If conversation flow mode is enabled, show continue prompt
+                    if st.session_state.conversation_flow_mode:
+                        st.session_state.show_continue_prompt = True
+                        st.session_state.conversation_turns += 1
 
                 except Exception as e:
                     error_message = f"Error: {str(e)}"
@@ -425,7 +657,14 @@ if prompt := st.chat_input("Type your message here or use voice input above...")
         with st.spinner("Thinking..."):
             try:
                 # Get current personality system prompt
-                system_prompt = PERSONALITIES[st.session_state.personality]["system_prompt"]
+                base_system_prompt = PERSONALITIES[st.session_state.personality]["system_prompt"]
+
+                # Add language instruction to system prompt
+                lang_name = LANGUAGES[st.session_state.language]["name"]
+                if st.session_state.language != "English":
+                    system_prompt = f"{base_system_prompt}\n\nIMPORTANT: Please respond in {lang_name}. The user is communicating in {lang_name}, so respond naturally in {lang_name}."
+                else:
+                    system_prompt = base_system_prompt
 
                 # Initialize model with system instruction
                 model = genai.GenerativeModel(
@@ -452,13 +691,6 @@ if prompt := st.chat_input("Type your message here or use voice input above...")
 
                 # Display response
                 st.markdown(assistant_response)
-
-                # Text-to-speech for AI response
-                if st.session_state.enable_voice_response:
-                    # Speak in a separate thread so it doesn't block the UI
-                    import threading
-                    speech_thread = threading.Thread(target=speak_text, args=(assistant_response,))
-                    speech_thread.start()
 
                 # Add assistant response to chat history
                 st.session_state.messages.append({
