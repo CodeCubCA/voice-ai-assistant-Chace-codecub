@@ -153,6 +153,15 @@ You can also type messages directly in the chat input at the bottom of the page 
 - **Switch languages** anytime from the sidebar
 - **Try different personalities** to find the best fit for your task
 
+## 🚀 Live Deployments
+
+This project is deployed on multiple platforms for easy access:
+
+- **Render**: [https://voice-ai-assistant-l8hg.onrender.com/](https://voice-ai-assistant-l8hg.onrender.com/)
+- **Hugging Face Spaces**: [https://huggingface.co/spaces/Chace-codecub/Voice-AI-Assistant](https://huggingface.co/spaces/Chace-codecub/Voice-AI-Assistant)
+
+You can try the live application without any local setup by visiting either of these links.
+
 ## Project Structure
 
 ```
