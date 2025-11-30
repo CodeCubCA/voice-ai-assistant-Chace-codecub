@@ -1,3 +1,14 @@
+---
+title: Voice AI Assistant
+emoji: 🎤
+colorFrom: blue
+colorTo: purple
+sdk: streamlit
+sdk_version: "1.31.0"
+app_file: app.py
+pinned: false
+---
+
 # Voice AI Assistant
 
 An intelligent AI chatbot with advanced voice input and output capabilities, powered by Google Gemini AI. This application provides a seamless conversational experience with multi-language support and customizable AI personalities.
