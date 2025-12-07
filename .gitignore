@@ -17,3 +17,14 @@ ENV/
 
 # OS
 .DS_Store
+
+# Node modules and build artifacts
+node_modules/
+package-lock.json
+build/
+dist/
+
+# Component-specific
+components/*/frontend/node_modules/
+components/*/frontend/build/
+components/*/frontend/package-lock.json

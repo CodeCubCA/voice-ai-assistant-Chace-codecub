@@ -2,13 +2,14 @@ import os
 import streamlit.components.v1 as components
 
 # Create a _RELEASE constant
-_RELEASE = True
+# Set to False to use development server, True to use production build
+_RELEASE = False  # TEMPORARILY using dev mode for debugging
 
 # Declare component
 if not _RELEASE:
     _component_func = components.declare_component(
         "continuous_voice_recorder",
-        url="http://localhost:3001",
+        url="http://localhost:3000",  # React dev server runs on 3000
     )
 else:
     parent_dir = os.path.dirname(os.path.abspath(__file__))

@@ -5,16 +5,17 @@ import {
   ComponentProps,
 } from "streamlit-component-lib"
 
-interface VoiceRecorderProps extends ComponentProps {
-  args: {
-    auto_start: boolean
-    silence_threshold: number
-    silence_duration: number
-  }
+interface VoiceRecorderArgs {
+  auto_start?: boolean
+  silence_threshold?: number
+  silence_duration?: number
 }
 
-const ContinuousVoiceRecorder: React.FC<VoiceRecorderProps> = (props) => {
-  const { auto_start = false, silence_threshold = 0.02, silence_duration = 2.0 } = props.args
+const ContinuousVoiceRecorder: React.FC<ComponentProps> = (props) => {
+  console.log("ContinuousVoiceRecorder props:", props)
+  const args = (props.args as VoiceRecorderArgs) || {}
+  const { auto_start = false, silence_threshold = 0.02, silence_duration = 2.0 } = args
+  console.log("Parsed args:", { auto_start, silence_threshold, silence_duration })
 
   const [isRecording, setIsRecording] = useState(false)
   const [status, setStatus] = useState<string>("Ready")
@@ -26,6 +27,36 @@ const ContinuousVoiceRecorder: React.FC<VoiceRecorderProps> = (props) => {
   const analyserRef = useRef<AnalyserNode | null>(null)
   const silenceTimerRef = useRef<NodeJS.Timeout | null>(null)
   const animationFrameRef = useRef<number | null>(null)
+
+  // Stop recording
+  const stopRecording = useCallback(() => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.stop()
+    }
+
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop())
+      streamRef.current = null
+    }
+
+    if (audioContextRef.current) {
+      audioContextRef.current.close()
+      audioContextRef.current = null
+    }
+
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current)
+      silenceTimerRef.current = null
+    }
+
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current)
+      animationFrameRef.current = null
+    }
+
+    setIsRecording(false)
+    setStatus("Processing...")
+  }, [])
 
   // Voice Activity Detection
   const checkAudioLevel = useCallback(() => {
@@ -58,7 +89,7 @@ const ContinuousVoiceRecorder: React.FC<VoiceRecorderProps> = (props) => {
     if (isRecording) {
       animationFrameRef.current = requestAnimationFrame(checkAudioLevel)
     }
-  }, [isRecording, silence_threshold, silence_duration])
+  }, [isRecording, silence_threshold, silence_duration, stopRecording])
 
   // Start recording
   const startRecording = useCallback(async () => {
@@ -131,36 +162,6 @@ const ContinuousVoiceRecorder: React.FC<VoiceRecorderProps> = (props) => {
     }
   }, [checkAudioLevel])
 
-  // Stop recording
-  const stopRecording = useCallback(() => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-      mediaRecorderRef.current.stop()
-    }
-
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop())
-      streamRef.current = null
-    }
-
-    if (audioContextRef.current) {
-      audioContextRef.current.close()
-      audioContextRef.current = null
-    }
-
-    if (silenceTimerRef.current) {
-      clearTimeout(silenceTimerRef.current)
-      silenceTimerRef.current = null
-    }
-
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current)
-      animationFrameRef.current = null
-    }
-
-    setIsRecording(false)
-    setStatus("Processing...")
-  }, [])
-
   // Auto-start if requested
   useEffect(() => {
     if (auto_start && !isRecording) {
@@ -180,7 +181,13 @@ const ContinuousVoiceRecorder: React.FC<VoiceRecorderProps> = (props) => {
 
   // Notify Streamlit that component is ready
   useEffect(() => {
+    console.log("Continuous Voice Recorder: Initializing...")
+    console.log("Streamlit object:", Streamlit)
+    console.log("Setting frame height...")
     Streamlit.setFrameHeight(120)
+    console.log("Calling setComponentReady...")
+    Streamlit.setComponentReady()
+    console.log("Continuous Voice Recorder: Ready! Component should be communicating with Streamlit now.")
   }, [])
 
   return (

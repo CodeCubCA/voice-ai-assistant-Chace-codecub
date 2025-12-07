@@ -2,12 +2,16 @@ import streamlit as st
 import google.generativeai as genai
 from dotenv import load_dotenv
 import os
+import sys
 from audio_recorder_streamlit import audio_recorder
 import speech_recognition as sr
 import io
 from gtts import gTTS
 import base64
 import hashlib
+
+# Import custom WebRTC component
+from components.continuous_voice_recorder import continuous_voice_recorder
 
 # Load environment variables
 load_dotenv()
@@ -179,6 +183,12 @@ if "conversation_turns" not in st.session_state:
 
 if "show_continue_prompt" not in st.session_state:
     st.session_state.show_continue_prompt = False
+
+if "automatic_mode" not in st.session_state:
+    st.session_state.automatic_mode = False
+
+if "auto_record_trigger" not in st.session_state:
+    st.session_state.auto_record_trigger = 0
 
 # Function to clean text for TTS
 def clean_text_for_speech(text):
@@ -398,10 +408,23 @@ with st.sidebar:
         st.markdown("---")
 
         st.session_state.conversation_flow_mode = st.checkbox(
-            "🔄 Enhanced Conversation Flow",
-            value=st.session_state.conversation_flow_mode,
-            help="After AI responds, automatically highlight the microphone and show a prominent prompt to continue talking"
+            "🔄 Enhanced Conversation Flow (Semi-Automatic)",
+            value=st.session_state.conversation_flow_mode and not st.session_state.automatic_mode,
+            disabled=st.session_state.automatic_mode,
+            help="After AI responds, show a prominent prompt to continue talking"
         )
+
+        st.markdown("---")
+
+        # Enable automatic mode with WebRTC component
+        st.session_state.automatic_mode = st.checkbox(
+            "🤖 Fully Automatic Mode (WebRTC)",
+            value=st.session_state.automatic_mode,
+            disabled=st.session_state.conversation_flow_mode,
+            help="Automatically starts recording after AI responds. Uses Voice Activity Detection to detect when you stop speaking."
+        )
+
+        st.info("💡 **Tip:** Use Enhanced Conversation Flow for faster multi-turn conversations, or enable Fully Automatic Mode for hands-free operation!")
 
         if st.session_state.conversation_flow_mode:
             st.success("✅ Flow mode active - conversation prompts enabled!")
@@ -413,6 +436,18 @@ with st.sidebar:
                     if st.button("Reset", key="reset_turns"):
                         st.session_state.conversation_turns = 0
                         st.session_state.show_continue_prompt = False
+                        st.rerun()
+        elif st.session_state.automatic_mode:
+            st.success("✅ Automatic mode active - hands-free conversation enabled!")
+            st.info("🎙️ The microphone will automatically start after AI responds and stop when you finish speaking (2 seconds of silence).")
+            if st.session_state.conversation_turns > 0:
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.metric("Conversation Turns", st.session_state.conversation_turns)
+                with col2:
+                    if st.button("Reset", key="reset_auto_turns"):
+                        st.session_state.conversation_turns = 0
+                        st.session_state.auto_record_trigger = 0
                         st.rerun()
 
 # Main chat interface
@@ -456,8 +491,11 @@ for idx, message in enumerate(st.session_state.messages):
 # Voice Input Section
 st.markdown("### 🎤 Voice Input")
 
-# Show prominent continue prompt if in conversation flow mode
-if st.session_state.show_continue_prompt and st.session_state.conversation_flow_mode:
+# Show different prompts based on mode
+if st.session_state.automatic_mode and len(st.session_state.messages) > 0 and st.session_state.messages[-1]["role"] == "assistant":
+    st.info("🤖 **Automatic mode active** - Recording will start automatically below...")
+    st.markdown("---")
+elif st.session_state.show_continue_prompt and st.session_state.conversation_flow_mode:
     st.success("### 🎙️ **Ready to continue? Click the microphone below!**")
     st.info(f"💬 Conversation turn #{st.session_state.conversation_turns + 1} - Keep the conversation going!")
 
@@ -472,25 +510,33 @@ if st.session_state.show_continue_prompt and st.session_state.conversation_flow_
 
 with st.expander("ℹ️ How to use voice input", expanded=False):
     st.markdown("""
-    **Steps:**
+    **Manual Mode (Default):**
     1. Select your preferred language in the sidebar (🌍 Language)
     2. Click the microphone button below
     3. Speak your message clearly in the selected language
     4. Click stop when finished
     5. Message will auto-send after 1 second
 
-    **Tips:**
-    - Speak clearly and at a normal pace
-    - Minimize background noise for best results
-    - You can edit transcriptions if needed
-    - AI will respond in your selected language
-
-    **🔄 Enhanced Conversation Flow:**
+    **🔄 Enhanced Conversation Flow (Semi-Automatic):**
     - Enable in Voice Settings sidebar
     - After AI responds, you'll see a prominent "Continue" prompt
     - Page automatically scrolls to microphone
     - Track conversation turns in the sidebar
     - Makes multi-turn conversations much faster!
+
+    **🤖 Fully Automatic Mode (Hands-Free):**
+    - Enable "Fully Automatic Mode" in Voice Settings
+    - Microphone automatically starts after AI responds
+    - Uses Voice Activity Detection (VAD) to detect when you stop speaking
+    - Automatically stops after 2 seconds of silence
+    - Perfect for hands-free, natural conversations!
+    - Note: Only one mode can be active at a time
+
+    **Tips:**
+    - Speak clearly and at a normal pace
+    - Minimize background noise for best results
+    - You can edit transcriptions if needed
+    - AI will respond in your selected language
 
     **Supported Languages:**
     🇺🇸 English | 🇪🇸 Spanish | 🇫🇷 French | 🇨🇳 Chinese | 🇯🇵 Japanese
@@ -521,14 +567,40 @@ if st.session_state.show_edit and st.session_state.voice_text and len(st.session
                     st.session_state.show_edit = False
                     st.rerun()
 
-# Audio recorder
-audio_bytes = audio_recorder(
-    text="Click to record",
-    recording_color="#e74c3c",
-    neutral_color="#3498db",
-    icon_name="microphone",
-    icon_size="2x",
-)
+# Audio recorder - use different component based on mode
+audio_bytes = None
+
+if st.session_state.automatic_mode:
+    # Use continuous WebRTC recorder with Voice Activity Detection
+    # Auto-start if this is after an AI response
+    should_auto_start = len(st.session_state.messages) > 0 and st.session_state.messages[-1]["role"] == "assistant"
+
+    audio_data = continuous_voice_recorder(
+        auto_start=should_auto_start,
+        silence_threshold=0.02,
+        silence_duration=2.0,
+        key=f"auto_recorder_{st.session_state.auto_record_trigger}"
+    )
+
+    # Convert base64 data URL to bytes if audio was received
+    if audio_data and 'audio' in audio_data:
+        import base64
+        import re
+        # Extract base64 data from data URL
+        match = re.match(r'data:audio/(\w+);base64,(.+)', audio_data['audio'])
+        if match:
+            audio_base64 = match.group(2)
+            audio_bytes = base64.b64decode(audio_base64)
+
+else:
+    # Use manual audio recorder
+    audio_bytes = audio_recorder(
+        text="Click to record",
+        recording_color="#e74c3c",
+        neutral_color="#3498db",
+        icon_name="microphone",
+        icon_size="2x",
+    )
 
 # Process recorded audio and auto-send
 if audio_bytes:
@@ -629,6 +701,11 @@ if audio_bytes:
                     # If conversation flow mode is enabled, show continue prompt
                     if st.session_state.conversation_flow_mode:
                         st.session_state.show_continue_prompt = True
+                        st.session_state.conversation_turns += 1
+
+                    # If automatic mode is enabled, increment trigger to restart recorder
+                    if st.session_state.automatic_mode:
+                        st.session_state.auto_record_trigger += 1
                         st.session_state.conversation_turns += 1
 
                 except Exception as e:

@@ -13,6 +13,28 @@ pinned: false
 
 An intelligent AI chatbot with advanced voice input and output capabilities, powered by Google Gemini AI. This application provides a seamless conversational experience with multi-language support and customizable AI personalities.
 
+## Screenshots
+
+### Main Interface
+![Main Interface](screenshots/main-interface.png)
+*The Voice AI Assistant main interface showing the chat area, voice input controls, and sidebar settings*
+
+### Voice Input Modes
+![Voice Input](screenshots/voice-input.png)
+*Three voice input modes: Manual Recording, Enhanced Conversation Flow, and Fully Automatic Mode*
+
+### Multi-Language Support
+![Language Selection](screenshots/language-selection.png)
+*Support for 5 languages: English, Spanish, French, Chinese (Mandarin), and Japanese*
+
+### AI Personalities
+![AI Personalities](screenshots/personalities.png)
+*Choose from 4 different AI personalities: General Assistant, Study Buddy, Creative Writer, and Tech Expert*
+
+### Enhanced Conversation Flow
+![Conversation Flow](screenshots/conversation-flow.png)
+*Semi-automatic conversation mode with turn tracking and auto-scroll to latest responses*
+
 ## Features
 
 ### Core Capabilities
